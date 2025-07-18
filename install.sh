@@ -58,9 +58,9 @@ Lena_menu() {
     echo "|| |     ___ _ __   __ _ 									|"
     echo "|| |    / _ \ '_ \ / _  |									|"
     echo "|| |___|  __/ | | | (_| |									|"
-    echo "|\_____/\___|_| |_|\__,_|	Ver.1.0.4 Beta			        |" 
+    echo "|\_____/\___|_| |_|\__,_|	V1.0.3 Beta			            |" 
     echo "+-------------------------------------------------------------------------+"    
-    echo -e "| Telegram Channel : ${MAGENTA}@AminiDev ${NC}| Version : ${GREEN} 1.0.4 Beta ${NC} "
+    echo -e "| Telegram Channel : ${MAGENTA}@AminiDev ${NC}| Version : ${GREEN} 1.0.2 Beta ${NC} "
     echo "+-------------------------------------------------------------------------+"
     echo -e "|${GREEN}Server Country    |${NC} $SERVER_COUNTRY"
     echo -e "|${GREEN}Server IP         |${NC} $SERVER_IP"
@@ -108,6 +108,15 @@ install_bbr() {
 
 install_haproxy_and_configure() {
     echo "[*] Configuring HAProxy..."
+
+    # Ensure haproxy is installed
+    if ! command -v haproxy >/dev/null 2>&1; then
+        echo "[x] HAProxy is not installed. Installing..."
+        sudo apt update && sudo apt install -y haproxy
+    fi
+
+    # Ensure config directory exists
+    sudo mkdir -p /etc/haproxy
 
     # Default HAProxy config file
     local CONFIG_FILE="/etc/haproxy/haproxy.cfg"
