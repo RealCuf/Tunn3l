@@ -58,10 +58,10 @@ Lena_menu() {
     echo "|| |     ___ _ __   __ _ 									|"
     echo "|| |    / _ \ '_ \ / _  |									|"
     echo "|| |___|  __/ | | | (_| |									|"
-    echo "|\_____/\___|_| |_|\__,_|	V1.0.3 Beta			            |" 
+    echo "|\_____/\___|_| |_|\__,_|	Ver.1.0.4 Beta			        |" 
     echo "+-------------------------------------------------------------------------+"    
-    echo -e "| Telegram Channel : ${MAGENTA}@AminiDev ${NC}| Version : ${GREEN} 1.0.3 Beta ${NC} "
-    echo "+-------------------------------------------------------------------------+"      
+    echo -e "| Telegram Channel : ${MAGENTA}@AminiDev ${NC}| Version : ${GREEN} 1.0.4 Beta ${NC} "
+    echo "+-------------------------------------------------------------------------+"
     echo -e "|${GREEN}Server Country    |${NC} $SERVER_COUNTRY"
     echo -e "|${GREEN}Server IP         |${NC} $SERVER_IP"
     echo -e "|${GREEN}Server ISP        |${NC} $SERVER_ISP"
@@ -71,6 +71,7 @@ Lena_menu() {
     echo -e "1- Install new tunnel"
     echo -e "2- Uninstall tunnel(s)"
     echo -e "3- Install BBR"
+    echo -e "4- install cronjob"
     echo "+-------------------------------------------------------------------------+"
     echo -e "\033[0m"
 }
@@ -91,7 +92,11 @@ uninstall_all_vxlan() {
     apt remove -y haproxy 2>/dev/null
     apt purge -y haproxy 2>/dev/null
     apt autoremove -y 2>/dev/null
-    echo "[+] All VXLAN tunnels deleted."
+    # Remove related cronjobs
+    crontab -l 2>/dev/null | grep -v 'systemctl restart haproxy' | grep -v 'systemctl restart vxlan-tunnel' | grep -v '/etc/ping_vxlan.sh' > /tmp/cron_tmp || true
+    crontab /tmp/cron_tmp
+    rm /tmp/cron_tmp
+    echo "[+] All VXLAN tunnels and related cronjobs deleted."
 }
 
 install_bbr() {
@@ -120,13 +125,16 @@ global
     user haproxy
     group haproxy
     daemon
+    maxconn 4096
 
 defaults
     mode    tcp
     option  dontlognull
-    timeout connect 5000
-    timeout client  50000
-    timeout server  50000
+    timeout connect 5000ms
+    timeout client  50000ms
+    timeout server  50000ms
+    retries 3
+    option  tcpka
 EOL
 
     read -p "Enter ports (comma-separated): " user_ports
@@ -140,9 +148,11 @@ EOL
 frontend frontend_$port
     bind *:$port
     default_backend backend_$port
+    option tcpka
 
 backend backend_$port
-    server server1 $local_ip:$port check
+    option tcpka
+    server server1 $local_ip:$port check maxconn 2048
 EOL
     done
 
@@ -150,6 +160,7 @@ EOL
     if haproxy -c -f "$CONFIG_FILE"; then
         echo "[*] Restarting HAProxy service..."
         systemctl restart haproxy
+        systemctl enable haproxy
         echo -e "${GREEN}HAProxy configured and restarted successfully.${NC}"
     else
         echo -e "${YELLOW}Warning: HAProxy configuration is invalid!${NC}"
@@ -159,7 +170,7 @@ EOL
 # ---------------- MAIN ----------------
 while true; do
     Lena_menu
-    read -p "Enter your choice [1-3]: " main_action
+    read -p "Enter your choice [1-4]: " main_action
     case $main_action in
         1)
             break
@@ -170,6 +181,24 @@ while true; do
             ;;
         3)
             install_bbr
+            read -p "Press Enter to return to menu..."
+            ;;
+        4)
+            while true; do
+                read -p "How many hours between each restart? (1-24): " cron_hours
+                if [[ $cron_hours =~ ^[0-9]+$ ]] && (( cron_hours >= 1 && cron_hours <= 24 )); then
+                    break
+                else
+                    echo "Invalid input. Please enter a number between 1 and 24."
+                fi
+            done
+            # Remove any previous cronjobs for these services
+            crontab -l 2>/dev/null | grep -v 'systemctl restart haproxy' | grep -v 'systemctl restart vxlan-tunnel' > /tmp/cron_tmp || true
+            echo "0 */$cron_hours * * * systemctl restart haproxy >/dev/null 2>&1" >> /tmp/cron_tmp
+            echo "0 */$cron_hours * * * systemctl restart vxlan-tunnel >/dev/null 2>&1" >> /tmp/cron_tmp
+            crontab /tmp/cron_tmp
+            rm /tmp/cron_tmp
+            echo -e "${GREEN}Cronjob set successfully to restart haproxy and vxlan-tunnel every $cron_hours hour(s).${NC}"
             read -p "Press Enter to return to menu..."
             ;;
         *)
@@ -209,8 +238,15 @@ if [[ "$role_choice" == "1" ]]; then
         fi
     done
 
-    read -p "Should port forwarding be done automatically? (It is done with haproxy tool) [1-yes, 2-no]: " haproxy_choice
-
+    # Strict input validation for haproxy_choice
+    while true; do
+        read -p "Should port forwarding be done automatically? (It is done with haproxy tool) [1-yes, 2-no]: " haproxy_choice
+        if [[ "$haproxy_choice" == "1" || "$haproxy_choice" == "2" ]]; then
+            break
+        else
+            echo "Please enter 1 (yes) or 2 (no)."
+        fi
+    done
     if [[ "$haproxy_choice" == "1" ]]; then
         install_haproxy_and_configure
     else
@@ -279,6 +315,8 @@ cat <<EOF > /usr/local/bin/vxlan_bridge.sh
 ip link add $VXLAN_IF type vxlan id $VNI local $(hostname -I | awk '{print $1}') remote $REMOTE_IP dev $INTERFACE dstport $DSTPORT nolearning
 ip addr add $VXLAN_IP dev $VXLAN_IF
 ip link set $VXLAN_IF up
+# Persistent keepalive: ping remote every 30s in background
+( while true; do ping -c 1 $REMOTE_IP >/dev/null 2>&1; sleep 30; done ) &
 EOF
 
 chmod +x /usr/local/bin/vxlan_bridge.sh
