@@ -1,2 +1,12 @@
 # Tunn3l
-Unnofficial repository to make the installation of the Psiphon tunnel on the Linux operating system easier
+
+Simple multi-node Psiphon management on Linux.
+
+## Setup
+
+```bash
+git clone https://github.com/RealCuf/Tunn3l.git
+cd Tunn3l
+chmod +x *.sh
+./install.sh
+./tunn3l.sh
