@@ -1,10 +1,11 @@
 #!/bin/bash
 
-BASE_DIR=~/tunn3l
+BASE_DIR="$HOME/tunn3l"
 NODES_DIR="$BASE_DIR/nodes"
 BINARY="$BASE_DIR/psiphon-tunnel-core"
 
 mkdir -p "$NODES_DIR"
+chmod +x "$BINARY"
 
 create_node() {
   read -p "Enter node name: " name
@@ -27,7 +28,8 @@ start_node() {
   DIR="$NODES_DIR/$name"
 
   if [[ -f "$DIR/config.json" ]]; then
-    cd "$DIR" && nohup "$BINARY" -config config.json > "$DIR/log.txt" 2>&1 &
+    nohup "$BINARY" -config "$DIR/config.json" > "$DIR/log.txt" 2>&1 &
+    echo $! > "$DIR/pid.txt"
     echo "[+] Node '$name' started."
   else
     echo "[-] Node '$name' not found!"
@@ -36,8 +38,15 @@ start_node() {
 
 stop_node() {
   read -p "Enter node name to stop: " name
-  pkill -f "$NODES_DIR/$name"
-  echo "[+] Node '$name' stopped."
+  DIR="$NODES_DIR/$name"
+
+  if [[ -f "$DIR/pid.txt" ]]; then
+    kill "$(cat "$DIR/pid.txt")"
+    rm "$DIR/pid.txt"
+    echo "[+] Node '$name' stopped."
+  else
+    echo "[-] PID file not found for node '$name'"
+  fi
 }
 
 list_nodes() {
