@@ -9,18 +9,27 @@ chmod +x "$BINARY"
 
 create_node() {
   read -p "Enter node name: " name
-  read -p "Enter SOCKS5 port (e.g. 1080): " port
+  read -p "Enter LocalHttpProxyPort (e.g. 8081): " http_port
+  read -p "Enter LocalSocksProxyPort (e.g. 1081): " socks_port
 
   DIR="$NODES_DIR/$name"
   mkdir -p "$DIR"
 
   cat > "$DIR/config.json" <<EOF
 {
-  "socks5ProxyPort": $port
+  "LocalHttpProxyPort": $http_port,
+  "LocalSocksProxyPort": $socks_port,
+  "EgressRegion": "US",
+  "PropagationChannelId": "FFFFFFFFFFFFFFFF",
+  "RemoteServerListDownloadFilename": "remote_server_list",
+  "RemoteServerListSignaturePublicKey": "MIICIDANBgkqhkiG9w0BAQEFAAOCAg0AMIICCAKCAgEAt7Ls+/39r+T6zNW7GiVpJfzq/xvL9SBH5rIFnk0RXYEYavax3WS6HOD35eTAqn8AniOwiH+DOkvgSKF2caqk/y1dfq47Pdymtwzp9ikpB1C5OfAysXzBiwVJlCdajBKvBZDerV1cMvRzCKvKwRmvDmHgphQQ7WfXIGbRbmmk6opMBh3roE42KcotLFtqp0RRwLtcBRNtCdsrVsjiI1Lqz/lH+T61sGjSjQ3CHMuZYSQJZo/KrvzgQXpkaCTdbObxHqb6/+i1qaVOfEsvjoiyzTxJADvSytVtcTjijhPEV6XskJVHE1Zgl+7rATr/pDQkw6DPCNBS1+Y6fy7GstZALQXwEDN/qhQI9kWkHijT8ns+i1vGg00Mk/6J75arLhqcodWsdeG/M/moWgqQAnlZAGVtJI1OgeF5fsPpXu4kctOfuZlGjVZXQNW34aOzm8r8S0eVZitPlbhcPiR4gT/aSMz/wd8lZlzZYsje/Jr8u/YtlwjjreZrGRmG8KMOzukV3lLmMppXFMvl4bxv6YFEmIuTsOhbLTwFgh7KYNjodLj/LsqRVfwz31PgWQFTEPICV7GCvgVlPRxnofqKSjgTWI4mxDhBpVcATvaoBl1L/6WLbFvBsoAUBItWwctO2xalKxF5szhGm8lccoc5MZr8kfE0uxMgsxz4er68iCID+rsCAQM=",
+  "RemoteServerListUrl": "https://s3.amazonaws.com//psiphon/web/mjr4-p23r-puwl/server_list_compressed",
+  "SponsorId": "FFFFFFFFFFFFFFFF",
+  "UseIndistinguishableTLS": true
 }
 EOF
 
-  echo "[+] Node '$name' created with port $port"
+  echo "[+] Node '$name' created with HTTP port $http_port and SOCKS port $socks_port"
 }
 
 start_node() {
@@ -55,6 +64,7 @@ list_nodes() {
 }
 
 menu() {
+  echo
   echo "=== Tunn3l Control Menu ==="
   echo "1) Create new node"
   echo "2) Start node"
