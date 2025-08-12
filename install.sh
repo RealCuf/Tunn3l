@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# ---------------- COLORS ----------------
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
 # ---------------- CHECK ROOT ----------------
 if [[ $EUID -ne 0 ]]; then
     echo -e "${YELLOW}[!] This script must be run as root.${NC}"
