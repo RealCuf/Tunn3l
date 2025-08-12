@@ -1,11 +1,5 @@
 #!/bin/bash
 
-# ---------------- COLORS ----------------
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-MAGENTA='\033[0;35m'
-NC='\033[0m'
-
 # ---------------- CHECK ROOT ----------------
 if [[ $EUID -ne 0 ]]; then
     echo -e "${YELLOW}[!] This script must be run as root.${NC}"
@@ -13,215 +7,333 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-# ---------------- FAST DEPENDENCY CHECK ----------------
-DEPS_MARKER="/etc/.lena_deps_installed"
-if [[ ! -f "$DEPS_MARKER" ]]; then
-    echo -e "${YELLOW}[*] Checking and installing dependencies (first run only)...${NC}"
-    apt-get update -y -qq
-    for pkg in iproute2 net-tools grep awk iputils-ping jq curl iptables; do
-        if ! command -v $pkg &> /dev/null; then
-            echo -e "${YELLOW}[*] Installing $pkg...${NC}"
-            apt-get install -y -qq $pkg
-        fi
-    done
-    touch "$DEPS_MARKER"
-else
-    echo -e "${GREEN}[✓] Dependencies already installed. Skipping check.${NC}"
+# ---------------- DEPENDENCY CHECK ----------------
+if ! command -v dialog &>/dev/null; then
+    apt-get update -qq
+    apt-get install -y dialog
 fi
 
+# ---------------- GLOBAL VARIABLES ----------------
+VNI=88
+VXLAN_IF="vxlan${VNI}"
+PING_MONITOR_SCRIPT="/usr/local/bin/ping_monitor.sh"
+BRIDGE_SCRIPT="/usr/local/bin/vxlan_bridge.sh"
+HAPROXY_CFG="/etc/haproxy/haproxy.cfg"
 
-# ---------------- FUNCTIONS ----------------
+# ---------------- INSTALL PING MONITOR ----------------
+install_ping_monitor() {
+    cat <<'EOF' > "$PING_MONITOR_SCRIPT"
+#!/bin/bash
 
-check_core_status() {
-    ip link show | grep -q 'vxlan' && echo "Active" || echo "Inactive"
+REMOTE_IP="$1"
+LOG_FILE="/var/log/vxlan_ping.log"
+
+if [[ -z "$REMOTE_IP" ]]; then
+    echo "Usage: $0 <remote_ip>"
+    exit 1
+fi
+
+while true; do
+    ping -c 1 "$REMOTE_IP" > /dev/null 2>&1
+    if [[ $? -eq 0 ]]; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - $REMOTE_IP is reachable" >> "$LOG_FILE"
+    else
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - $REMOTE_IP is unreachable" >> "$LOG_FILE"
+    fi
+    sleep 30
+done
+EOF
+    chmod +x "$PING_MONITOR_SCRIPT"
 }
 
-Lena_menu() {
-    clear
-    SERVER_IP=$(hostname -I | awk '{print $1}')
-    SERVER_COUNTRY=$(curl -sS "http://ip-api.com/json/$SERVER_IP" | jq -r '.country')
-    SERVER_ISP=$(curl -sS "http://ip-api.com/json/$SERVER_IP" | jq -r '.isp')
+# ---------------- INSTALL VXLAN TUNNEL ----------------
+install_vxlan_tunnel() {
+    exec 3>&1
+    ROLE=$(dialog --clear --title "Select Server Role" --menu "Choose server role:" 10 40 2 \
+        1 "Iran" 2 "Kharej" 2>&1 1>&3)
+    exec 3>&-
 
-    echo "+-------------------------------------------------------------------------+"
-    echo "| _                      									|"
-    echo "|| |                     									|"
-    echo "|| |     ___ _ __   __ _ 									|"
-    echo "|| |    / _ \ '_ \ / _  |									|"
-    echo "|| |___|  __/ | | | (_| |									|"
-    echo "|\_____/\___|_| |_|\__,_|	V1.1.0		    	            |"
-    echo "+-------------------------------------------------------------------------+"
-    echo -e "| Telegram Channel : ${MAGENTA}@AminiDev ${NC}| Version : ${GREEN} 1.0.0 ${NC} "
-    echo "+-------------------------------------------------------------------------+"
-    echo -e "|${GREEN}Server Country    |${NC} $SERVER_COUNTRY"
-    echo -e "|${GREEN}Server IP         |${NC} $SERVER_IP"
-    echo -e "|${GREEN}Server ISP        |${NC} $SERVER_ISP"
-    echo "+-------------------------------------------------------------------------+"
-    echo -e "|${YELLOW}Please choose an option:${NC}"
-    echo "+-------------------------------------------------------------------------+"
-    echo -e "1- Install new tunnel"
-    echo -e "2- Uninstall tunnel(s)"
-    echo -e "3- Edit tunnel"
-    echo -e "4- Install BBR"
-    echo -e "5- Cronjob settings"
-    echo -e "0- Exit"
-    echo "+-------------------------------------------------------------------------+"
-    echo -e "\033[0m"
+    if [[ "$ROLE" != "1" && "$ROLE" != "2" ]]; then
+        dialog --msgbox "Invalid role selected." 5 30
+        return
+    fi
+
+    exec 3>&1
+    IRAN_IP=$(dialog --inputbox "Enter IRAN IP (IPv4 or IPv6):" 8 60 2>&1 1>&3)
+    exec 3>&-
+    exec 3>&1
+    KHAREJ_IP=$(dialog --inputbox "Enter Kharej IP (IPv4 or IPv6):" 8 60 2>&1 1>&3)
+    exec 3>&-
+
+    while true; do
+        exec 3>&1
+        DSTPORT=$(dialog --inputbox "Enter tunnel port (1-64435):" 8 40 2>&1 1>&3)
+        exec 3>&-
+        if [[ "$DSTPORT" =~ ^[0-9]+$ ]] && (( DSTPORT >= 1 && DSTPORT <= 64435 )); then
+            break
+        else
+            dialog --msgbox "Invalid port. Please try again." 5 40
+        fi
+    done
+
+    exec 3>&1
+    HAPROXY_CHOICE=$(dialog --menu "Port forwarding via HAProxy?" 7 40 2 \
+        1 "Yes" 2 "No" 2>&1 1>&3)
+    exec 3>&-
+
+    if [[ "$ROLE" == "1" ]]; then
+        VXLAN_IP="30.0.0.1/24"
+        REMOTE_IP="$KHAREJ_IP"
+    else
+        VXLAN_IP="30.0.0.2/24"
+        REMOTE_IP="$IRAN_IP"
+    fi
+
+    INTERFACE=$(ip route get 1.1.1.1 | awk '{print $5}' | head -n1)
+
+    if [[ "$VXLAN_IP" == *":"* ]]; then
+        # IPv6 local IP
+        LOCAL_IP=$(hostname -I | tr ' ' '\n' | grep ':.*' | head -n1)
+    else
+        # IPv4 local IP
+        LOCAL_IP=$(hostname -I | awk '{print $1}')
+    fi
+
+    ip link del "$VXLAN_IF" 2>/dev/null || true
+
+    ip link add "$VXLAN_IF" type vxlan id "$VNI" local "$LOCAL_IP" remote "$REMOTE_IP" dev "$INTERFACE" dstport "$DSTPORT" nolearning
+
+    if [[ "$VXLAN_IP" == *":"* ]]; then
+        ip -6 addr add "$VXLAN_IP" dev "$VXLAN_IF"
+    else
+        ip addr add "$VXLAN_IP" dev "$VXLAN_IF"
+    fi
+
+    ip link set "$VXLAN_IF" up
+
+    if [[ "$VXLAN_IP" == *":"* ]]; then
+        # IPv6 rules
+        ip6tables -I INPUT 1 -p udp --dport "$DSTPORT" -j ACCEPT
+        ip6tables -I INPUT 1 -s "$REMOTE_IP" -j ACCEPT
+        ip6tables -I INPUT 1 -s "${VXLAN_IP%/*}" -j ACCEPT
+    else
+        # IPv4 rules
+        iptables -I INPUT 1 -p udp --dport "$DSTPORT" -j ACCEPT
+        iptables -I INPUT 1 -s "$REMOTE_IP" -j ACCEPT
+        iptables -I INPUT 1 -s "${VXLAN_IP%/*}" -j ACCEPT
+    fi
+
+    # Write bridge script
+    cat <<EOF > "$BRIDGE_SCRIPT"
+#!/bin/bash
+ip link add $VXLAN_IF type vxlan id $VNI local $LOCAL_IP remote $REMOTE_IP dev $INTERFACE dstport $DSTPORT nolearning
+if [[ "$VXLAN_IP" == *":"* ]]; then
+    ip -6 addr add "$VXLAN_IP" dev $VXLAN_IF
+else
+    ip addr add "$VXLAN_IP" dev $VXLAN_IF
+fi
+ip link set $VXLAN_IF up
+if ! pgrep -f "ping_monitor.sh $REMOTE_IP" > /dev/null; then
+    $PING_MONITOR_SCRIPT "$REMOTE_IP" &
+fi
+EOF
+    chmod +x "$BRIDGE_SCRIPT"
+
+    # Create systemd service and timer
+    cat <<EOF > /etc/systemd/system/vxlan-tunnel.service
+[Unit]
+Description=VXLAN Tunnel Interface
+After=network.target
+
+[Service]
+ExecStart=$BRIDGE_SCRIPT
+Type=oneshot
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    cat <<EOF > /etc/systemd/system/vxlan-tunnel-restart.service
+[Unit]
+Description=Restart VXLAN tunnel service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/systemctl restart vxlan-tunnel.service
+EOF
+
+    cat <<EOF > /etc/systemd/system/vxlan-tunnel-restart.timer
+[Unit]
+Description=Timer to restart VXLAN tunnel service every 1 hour
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable vxlan-tunnel.service vxlan-tunnel-restart.timer
+    systemctl start vxlan-tunnel.service vxlan-tunnel-restart.timer
+
+    # If user chose HAProxy, install/configure it
+    if [[ "$HAPROXY_CHOICE" == "1" ]]; then
+        install_haproxy_and_configure "$DSTPORT"
+    fi
+
+    dialog --msgbox "VXLAN tunnel setup completed successfully." 6 40
+    dialog --msgbox "\
+    VXLAN tunnel setup completed successfully.
+    
+    Interface: $VXLAN_IF
+    VXLAN IP: $VXLAN_IP
+    Remote IP: $REMOTE_IP
+    Port: $DSTPORT
+    " 12 60
+}
+
+# ---------------- UNINSTALL VXLAN TUNNEL ----------------
+uninstall_all_vxlan() {
+    ip link show | grep -o 'vxlan[0-9]\+' | while read -r iface; do
+        ip link del "$iface" 2>/dev/null
+    done
+
+    systemctl stop haproxy vxlan-tunnel vxlan-tunnel-restart.timer vxlan-tunnel-restart.service 2>/dev/null
+    systemctl disable haproxy vxlan-tunnel vxlan-tunnel-restart.timer vxlan-tunnel-restart.service 2>/dev/null
+
+    rm -f /usr/local/bin/vxlan_bridge.sh /usr/local/bin/ping_monitor.sh /etc/systemd/system/vxlan-tunnel.service /etc/systemd/system/vxlan-tunnel-restart.service /etc/systemd/system/vxlan-tunnel-restart.timer
+
+    systemctl daemon-reload
+
+    apt-get remove -y haproxy -qq
+    apt-get purge -y haproxy -qq
+    apt-get autoremove -y 2>/dev/null
+
+    crontab -l 2>/dev/null | grep -v 'systemctl restart haproxy' | grep -v 'systemctl restart vxlan-tunnel' > /tmp/cron_tmp || true
+    crontab /tmp/cron_tmp
+    rm /tmp/cron_tmp
+
+    dialog --msgbox "All VXLAN tunnels and related services removed." 6 50
 }
 
 # ---------------- EDIT VXLAN TUNNEL ----------------
 edit_vxlan_tunnel() {
-    local BRIDGE_FILE="/usr/local/bin/vxlan_bridge.sh"
-    local HAPROXY_CFG="/etc/haproxy/haproxy.cfg"
-
-    # --- Retrieve current settings ---
-    local VXLAN_IF VNI CUR_REMOTE CUR_LOCAL CUR_PORT
-    if [[ -f "$BRIDGE_FILE" ]]; then
-        CUR_REMOTE=$(grep -oP 'remote \K[^ ]+' "$BRIDGE_FILE")
-        CUR_LOCAL=$(grep -oP 'ip addr add \K[^ ]+' "$BRIDGE_FILE")
-        CUR_PORT=$(grep -oP 'dstport \K[^ ]+' "$BRIDGE_FILE")
-        VXLAN_IF=$(grep -oP 'dev \K[^ ]+' "$BRIDGE_FILE" | head -n1)
-        VNI=$(grep -oP 'vxlan id \K[^ ]+' "$BRIDGE_FILE")
-    fi
-
-    echo "=== Edit VXLAN Tunnel ==="
-    # --- Prompt for new values (default to current) ---
-    read -p "Remote IP [$CUR_REMOTE]: " NEW_REMOTE
-    NEW_REMOTE=${NEW_REMOTE:-$CUR_REMOTE}
-    read -p "Local VXLAN IP (e.g. 10.0.1.15/24) [$CUR_LOCAL]: " NEW_LOCAL
-    NEW_LOCAL=${NEW_LOCAL:-$CUR_LOCAL}
-    [[ "$NEW_LOCAL" != */* ]] && NEW_LOCAL="$NEW_LOCAL/24"
-    read -p "VXLAN Port [$CUR_PORT]: " NEW_PORT
-    NEW_PORT=${NEW_PORT:-$CUR_PORT}
-
-    # --- Validate inputs ---
-    if [[ -z "$NEW_REMOTE" || -z "$NEW_LOCAL" || -z "$NEW_PORT" ]]; then
-        echo "[x] Error: All fields are required."
+    if [[ ! -f "$BRIDGE_SCRIPT" ]]; then
+        dialog --msgbox "No existing tunnel configuration found." 6 40
         return
     fi
 
-    # --- Remove existing interface and any lingering IPs ---
-    if ip link show "$VXLAN_IF" &>/dev/null; then
-        echo "[*] Deleting existing interface $VXLAN_IF"
-        ip link del "$VXLAN_IF"
-    else
-        # flush any old IPs if interface exists in namespace
-        ip addr flush dev "$VXLAN_IF" 2>/dev/null || true
+    CUR_REMOTE=$(grep -oP 'remote \K[^ ]+' "$BRIDGE_SCRIPT")
+    CUR_LOCAL=$(grep -oP 'addr add \K[^ ]+' "$BRIDGE_SCRIPT")
+    CUR_PORT=$(grep -oP 'dstport \K[^ ]+' "$BRIDGE_SCRIPT")
+    VXLAN_IF=$(grep -oP 'dev \K[^ ]+' "$BRIDGE_SCRIPT" | head -n1)
+    VNI=$(grep -oP 'vxlan id \K[^ ]+' "$BRIDGE_SCRIPT")
+
+    exec 3>&1
+    NEW_REMOTE=$(dialog --inputbox "Remote IP:" 8 40 "$CUR_REMOTE" 2>&1 1>&3)
+    exec 3>&-
+    exec 3>&1
+    NEW_LOCAL=$(dialog --inputbox "Local VXLAN IP:" 8 40 "$CUR_LOCAL" 2>&1 1>&3)
+    exec 3>&-
+    exec 3>&1
+    NEW_PORT=$(dialog --inputbox "VXLAN Port:" 8 40 "$CUR_PORT" 2>&1 1>&3)
+    exec 3>&-
+
+    if [[ -z "$NEW_REMOTE" || -z "$NEW_LOCAL" || -z "$NEW_PORT" ]]; then
+        dialog --msgbox "Error: All fields are required." 5 40
+        return
     fi
 
-    # --- Create and configure new VXLAN ---
-    local IFACE=$(ip route get 1.1.1.1 | awk '{print $5}' | head -n1)
-    local HOST_IP=$(hostname -I | awk '{print $1}')
-    echo "[*] Creating VXLAN interface $VXLAN_IF with ID $VNI"
-    ip link add "$VXLAN_IF" type vxlan id "$VNI" \
-        local "$HOST_IP" remote "$NEW_REMOTE" \
-        dev "$IFACE" dstport "$NEW_PORT" nolearning
-    echo "[*] Assigning IP $NEW_LOCAL to $VXLAN_IF"
-    ip addr add "$NEW_LOCAL" dev "$VXLAN_IF"
+    # Delete existing interface
+    if ip link show "$VXLAN_IF" &>/dev/null; then
+        ip link del "$VXLAN_IF"
+    fi
+
+    IFACE=$(ip route get 1.1.1.1 | awk '{print $5}' | head -n1)
+    HOST_IP=$(hostname -I | awk '{print $1}')
+
+    ip link add "$VXLAN_IF" type vxlan id "$VNI" local "$HOST_IP" remote "$NEW_REMOTE" dev "$IFACE" dstport "$NEW_PORT" nolearning
+
+    if [[ "$NEW_LOCAL" == *":"* ]]; then
+        ip -6 addr add "$NEW_LOCAL" dev "$VXLAN_IF"
+    else
+        ip addr add "$NEW_LOCAL" dev "$VXLAN_IF"
+    fi
+
     ip link set "$VXLAN_IF" up
 
-    # --- Update bridge script for persistence ---
-    if [[ -f "$BRIDGE_FILE" ]]; then
-        sed -i "s|remote [^ ]\+|remote $NEW_REMOTE|" "$BRIDGE_FILE"
-        sed -i "s|ip addr add [^ ]\+|ip addr add $NEW_LOCAL|" "$BRIDGE_FILE"
-        sed -i "s|dstport [^ ]\+|dstport $NEW_PORT|" "$BRIDGE_FILE"
-    fi
+    # Update bridge script
+    sed -i "s|remote [^ ]\+|remote $NEW_REMOTE|" "$BRIDGE_SCRIPT"
+    sed -i "s|ip addr add [^ ]\+|ip addr add $NEW_LOCAL|" "$BRIDGE_SCRIPT"
+    sed -i "s|dstport [^ ]\+|dstport $NEW_PORT|" "$BRIDGE_SCRIPT"
 
-    # --- Update HAProxy backend IP if configured ---
+    # Update HAProxy if exists
     if [[ -f "$HAPROXY_CFG" ]]; then
-        local OLD_IP="${CUR_LOCAL%%/*}"
-        local NEW_IP="${NEW_LOCAL%%/*}"
+        OLD_IP="${CUR_LOCAL%%/*}"
+        NEW_IP="${NEW_LOCAL%%/*}"
         if [[ "$OLD_IP" != "$NEW_IP" ]]; then
-            echo "[*] Replacing HAProxy IP: $OLD_IP -> $NEW_IP"
             sed -i "s/$OLD_IP/$NEW_IP/g" "$HAPROXY_CFG"
             systemctl restart haproxy
         fi
     fi
 
-    # --- Restart VXLAN service ---
-    echo "[*] Restarting VXLAN tunnel service"
     systemctl restart vxlan-tunnel.service
 
-    echo -e "${GREEN}[✓] VXLAN tunnel updated and all services restarted.${NC}"
-}
-
-
-uninstall_all_vxlan() {
-    echo "[!] Deleting all VXLAN interfaces and cleaning up..."
-    for i in $(ip -d link show | grep -o 'vxlan[0-9]\+'); do
-        ip link del $i 2>/dev/null
-    done
-
-    systemctl stop haproxy vxlan-tunnel 2>/dev/null
-    systemctl disable haproxy vxlan-tunnel 2>/dev/null
-
-    rm -f /usr/local/bin/vxlan_bridge.sh /etc/ping_vxlan.sh /etc/systemd/system/vxlan-tunnel.service
-
-    systemctl daemon-reload
-
-    # Remove HAProxy package
-    apt remove -y haproxy -qq
-    apt purge -y haproxy -qq
-    apt autoremove -y 2>/dev/null
-
-    # Remove related cronjobs
-    crontab -l 2>/dev/null | grep -v 'systemctl restart haproxy' | grep -v 'systemctl restart vxlan-tunnel' | grep -v '/etc/ping_vxlan.sh' > /tmp/cron_tmp || true
-    crontab /tmp/cron_tmp
-    rm /tmp/cron_tmp
-    echo "[+] All VXLAN tunnels and related cronjobs deleted."
-}
-
-install_bbr() {
-    echo "Running BBR script..."
-    curl -fsSLk https://raw.githubusercontent.com/MrAminiDev/NetOptix/main/scripts/bbr.sh | bash
-}
-
-install_haproxy_and_configure() {
-    echo "[*] Configuring HAProxy..."
-
-    # Ensure haproxy is installed
-    if ! command -v haproxy >/dev/null 2>&1; then
-        echo "[x] HAProxy is not installed. Installing..."
-        apt update -qq && apt install -y haproxy -qq
+    # Start ping monitor if not running
+    if ! pgrep -f "ping_monitor.sh $NEW_REMOTE" > /dev/null; then
+        "$PING_MONITOR_SCRIPT" "$NEW_REMOTE" &
     fi
 
-    # Ensure config directory exists
+    dialog --msgbox "VXLAN tunnel updated successfully." 6 40
+}
+
+# ---------------- INSTALL BBR ----------------
+install_bbr() {
+    curl -fsSLk https://raw.githubusercontent.com/MrAminiDev/NetOptix/main/scripts/bbr.sh | bash
+    dialog --msgbox "BBR installation script executed." 6 40
+}
+
+# ---------------- INSTALL HAPROXY AND CONFIGURE ----------------
+install_haproxy_and_configure() {
+    local PORTS=$1
+    if ! command -v haproxy >/dev/null 2>&1; then
+        apt-get update -qq
+        apt-get install -y haproxy -qq
+    fi
+
     mkdir -p /etc/haproxy
 
-    # Default HAProxy config file
-    local CONFIG_FILE="/etc/haproxy/haproxy.cfg"
-    local BACKUP_FILE="/etc/haproxy/haproxy.cfg.bak"
+    BACKUP_FILE="/etc/haproxy/haproxy.cfg.bak"
+    [[ -f "$HAPROXY_CFG" ]] && cp "$HAPROXY_CFG" "$BACKUP_FILE"
 
-    # Backup old config
-    [ -f "$CONFIG_FILE" ] && cp "$CONFIG_FILE" "$BACKUP_FILE"
-
-    # Write base config
-    cat <<EOL > "$CONFIG_FILE"
+    cat <<EOL > "$HAPROXY_CFG"
 global
-    chroot /var/lib/haproxy
-    stats socket /run/haproxy/admin.sock mode 660 level admin
-    stats timeout 30s
-    user haproxy
-    group haproxy
     daemon
     maxconn 4096
+    user haproxy
+    group haproxy
+    stats socket /run/haproxy/admin.sock mode 660 level admin
+    stats timeout 30s
 
 defaults
-    mode    tcp
-    option  dontlognull
+    mode tcp
+    option dontlognull
     timeout connect 5000ms
-    timeout client  50000ms
-    timeout server  50000ms
+    timeout client 50000ms
+    timeout server 50000ms
     retries 3
-    option  tcpka
+    option tcpka
 EOL
 
-    read -p "Enter ports (comma-separated): " user_ports
-    local local_ip=$(hostname -I | awk '{print $1}')
+    local LOCAL_IP=$(hostname -I | awk '{print $1}')
+    IFS=',' read -ra PORT_ARR <<< "$PORTS"
 
-    IFS=',' read -ra ports <<< "$user_ports"
-
-    for port in "${ports[@]}"; do
-        cat <<EOL >> "$CONFIG_FILE"
+    for port in "${PORT_ARR[@]}"; do
+        cat <<EOL >> "$HAPROXY_CFG"
 
 frontend frontend_$port
     bind *:$port
@@ -230,260 +342,111 @@ frontend frontend_$port
 
 backend backend_$port
     option tcpka
-    server server1 $local_ip:$port check maxconn 2048
+    server server1 $LOCAL_IP:$port check maxconn 2048
 EOL
     done
 
-    # Validate haproxy config
-    if haproxy -c -f "$CONFIG_FILE"; then
-        echo "[*] Restarting HAProxy service..."
-        systemctl enable haproxy && systemctl restart haproxy
-        echo -e "${GREEN}HAProxy configured and restarted successfully.${NC}"
+    if haproxy -c -f "$HAPROXY_CFG"; then
+        systemctl enable haproxy
+        systemctl restart haproxy
+        dialog --msgbox "HAProxy configured and restarted successfully." 6 50
     else
-        echo -e "${YELLOW}Warning: HAProxy configuration is invalid!${NC}"
+        dialog --msgbox "Warning: HAProxy configuration invalid!" 6 40
     fi
 }
 
-# ---------------- MAIN ----------------
-while true; do
-    Lena_menu
-    read -p "Enter your choice [0-5]: " main_action
-    case $main_action in
-        0)
-            echo "Exiting..."
-            exit 0
-            ;;
-        1)
-            break
-            ;;
-        2)
-            uninstall_all_vxlan
-            read -p "Press Enter to return to menu..."
-            ;;
-        3)
-            edit_vxlan_tunnel
-            ;;
-        4)
-            install_bbr
-            read -p "Press Enter to return to menu..."
-            ;;
-        5)
-            while true; do
-                clear
-                echo "+-----------------------------+"
-                echo "|      Cronjob settings       |"
-                echo "+-----------------------------+"
-                echo "1- Install cronjob"
-                echo "2- Edit cronjob"
-                echo "3- Delete cronjob"
-                echo "4- Back to main menu"
-                read -p "Enter your choice [1-4]: " cron_action
-                case $cron_action in
-                    1)
-                        while true; do
-                            read -p "How many hours between each restart? (1-24, b=Back): " cron_hours
-                            if [[ "$cron_hours" == "b" || "$cron_hours" == "B" ]]; then
-                                break
-                            elif [[ $cron_hours =~ ^[0-9]+$ ]] && (( cron_hours >= 1 && cron_hours <= 24 )); then
-                                crontab -l 2>/dev/null | grep -v 'systemctl restart haproxy' | grep -v 'systemctl restart vxlan-tunnel' > /tmp/cron_tmp || true
-                                echo "0 */$cron_hours * * * systemctl restart haproxy >/dev/null 2>&1" >> /tmp/cron_tmp
-                                echo "0 */$cron_hours * * * systemctl restart vxlan-tunnel >/dev/null 2>&1" >> /tmp/cron_tmp
-                                crontab /tmp/cron_tmp
-                                rm /tmp/cron_tmp
-                                echo -e "${GREEN}Cronjob set successfully to restart haproxy and vxlan-tunnel every $cron_hours hour(s).${NC}"
-                                read -p "Press Enter to return to Cronjob settings..."
-                                break
-                            else
-                                echo "Invalid input. Please enter a number between 1 and 24 or 'b' to go back."
-                            fi
-                        done
-                        ;;
-                    2)
-                        if crontab -l 2>/dev/null | grep -q 'systemctl restart haproxy'; then
-                            while true; do
-                                read -p "Enter new hours for cronjob (1-24, b=Back): " new_cron_hours
-                                if [[ "$new_cron_hours" == "b" || "$new_cron_hours" == "B" ]]; then
-                                    break
-                                elif [[ $new_cron_hours =~ ^[0-9]+$ ]] && (( new_cron_hours >= 1 && new_cron_hours <= 24 )); then
-                                    crontab -l 2>/dev/null | grep -v 'systemctl restart haproxy' | grep -v 'systemctl restart vxlan-tunnel' > /tmp/cron_tmp || true
-                                    echo "0 */$new_cron_hours * * * systemctl restart haproxy >/dev/null 2>&1" >> /tmp/cron_tmp
-                                    echo "0 */$new_cron_hours * * * systemctl restart vxlan-tunnel >/dev/null 2>&1" >> /tmp/cron_tmp
-                                    crontab /tmp/cron_tmp
-                                    rm /tmp/cron_tmp
-                                    echo -e "${GREEN}Cronjob updated successfully to every $new_cron_hours hour(s).${NC}"
-                                    read -p "Press Enter to return to Cronjob settings..."
-                                    break
-                                else
-                                    echo "Invalid input. Please enter a number between 1 and 24 or 'b' to go back."
-                                fi
-                            done
-                        else
-                            echo -e "${YELLOW}No cronjob found to edit. Please install first.${NC}"
-                            read -p "Press Enter to return to Cronjob settings..."
-                        fi
-                        ;;
-                    3)
-                        if crontab -l 2>/dev/null | grep -q 'systemctl restart haproxy'; then
-                            crontab -l 2>/dev/null | grep -v 'systemctl restart haproxy' | grep -v 'systemctl restart vxlan-tunnel' > /tmp/cron_tmp || true
-                            crontab /tmp/cron_tmp
-                            rm /tmp/cron_tmp
-                            echo -e "${GREEN}Cronjob deleted successfully.${NC}"
-                        else
-                            echo -e "${YELLOW}No cronjob found to delete.${NC}"
-                        fi
-                        read -p "Press Enter to return to Cronjob settings..."
-                        ;;
-                    4)
+# ---------------- CRONJOB SETTINGS ----------------
+cronjob_settings() {
+    while true; do
+        exec 3>&1
+        choice=$(dialog --clear --title "Cronjob Settings" --menu "Select an option:" 10 40 4 \
+            1 "Install cronjob" \
+            2 "Delete cronjob" \
+            3 "Back to main menu" 2>&1 1>&3)
+        exec 3>&-
+
+        case $choice in
+            1)
+                while true; do
+                    exec 3>&1
+                    cron_hours=$(dialog --inputbox "Hours between restart? (1-24):" 8 40 2>&1 1>&3)
+                    exec 3>&-
+                    if [[ "$cron_hours" =~ ^[0-9]+$ ]] && (( cron_hours >=1 && cron_hours <=24 )); then
+                        crontab -l 2>/dev/null | grep -v -E 'systemctl restart haproxy|systemctl restart vxlan-tunnel' > /tmp/cron_tmp || true
+                        echo "0 */$cron_hours * * * systemctl restart vxlan-tunnel.service" >> /tmp/cron_tmp
+                        echo "0 */$cron_hours * * * systemctl restart haproxy" >> /tmp/cron_tmp
+                        crontab /tmp/cron_tmp
+                        rm /tmp/cron_tmp
+                        dialog --msgbox "Cronjob installed." 5 30
                         break
-                        ;;
-                    *)
-                        echo "[x] Invalid option. Try again."
-                        sleep 1
-                        ;;
-                esac
-            done
-            ;;
-        *)
-            echo "[x] Invalid option. Try again."
-            sleep 1
-            ;;
-    esac
-
-done
-
-# Check if ip command is available
-if ! command -v ip >/dev/null 2>&1; then
-    echo "[x] iproute2 is not installed. Aborting."
-    exit 1
-fi
-
-# ------------- VARIABLES --------------
-VNI=88
-VXLAN_IF="vxlan${VNI}"
-
-# --------- Choose Server Role ----------
-echo "Choose server role:"
-echo "1- Iran"
-echo "2- Kharej"
-read -p "Enter choice (1/2): " role_choice
-
-if [[ "$role_choice" == "1" ]]; then
-    read -p "Enter IRAN IP: " IRAN_IP
-    read -p "Enter Kharej IP: " KHAREJ_IP
-
-    # Port validation loop
-    while true; do
-        read -p "Tunnel port (1 ~ 64435): " DSTPORT
-        if [[ $DSTPORT =~ ^[0-9]+$ ]] && (( DSTPORT >= 1 && DSTPORT <= 64435 )); then
-            break
-        else
-            echo "Invalid port. Try again."
-        fi
+                    else
+                        dialog --msgbox "Invalid input." 5 30
+                    fi
+                done
+                ;;
+            2)
+                crontab -l 2>/dev/null | grep -v -E 'systemctl restart haproxy|systemctl restart vxlan-tunnel' > /tmp/cron_tmp || true
+                crontab /tmp/cron_tmp
+                rm /tmp/cron_tmp
+                dialog --msgbox "Cronjob deleted." 5 30
+                ;;
+            3)
+                break
+                ;;
+            *)
+                dialog --msgbox "Invalid choice." 5 30
+                ;;
+        esac
     done
+}
 
-    # Strict input validation for haproxy_choice
-    while true; do
-        read -p "Should port forwarding be done automatically? (It is done with haproxy tool) [1-yes, 2-no]: " haproxy_choice
-        if [[ "$haproxy_choice" == "1" || "$haproxy_choice" == "2" ]]; then
-            break
-        else
-            echo "Please enter 1 (yes) or 2 (no)."
-        fi
-    done
-    if [[ "$haproxy_choice" == "1" ]]; then
-        install_haproxy_and_configure
+# ---------------- UPDATE SCRIPT ----------------
+update_script() {
+    TMP_DIR="/tmp/tunn3l_update"
+    REPO_URL="https://github.com/RealCuf/Tunn3l.git"
+
+    if [[ ! -d "$TMP_DIR" ]]; then
+        git clone "$REPO_URL" "$TMP_DIR"
     else
-        ipv4_local=$(hostname -I | awk '{print $1}')
-        echo "IRAN Server setup complete."
-        echo -e "####################################"
-        echo -e "# Your IPv4 :                      #"
-        echo -e "#  30.0.0.1                     #"
-        echo -e "####################################"
+        cd "$TMP_DIR" && git pull
     fi
 
-    VXLAN_IP="30.0.0.1/24"
-    REMOTE_IP=$KHAREJ_IP
+    if [[ -f "$TMP_DIR/install.sh" ]]; then
+        cp "$TMP_DIR/install.sh" /usr/local/bin/install.sh
+        chmod +x /usr/local/bin/install.sh
+        dialog --msgbox "Script updated successfully." 6 40
+    else
+        dialog --msgbox "Update failed: script file not found." 6 50
+    fi
+}
 
-elif [[ "$role_choice" == "2" ]]; then
-    read -p "Enter IRAN IP: " IRAN_IP
-    read -p "Enter Kharej IP: " KHAREJ_IP
-
-    # Port validation loop
+# ---------------- MAIN MENU ----------------
+main_menu() {
+    install_ping_monitor
     while true; do
-        read -p "Tunnel port (1 ~ 64435): " DSTPORT
-        if [[ $DSTPORT =~ ^[0-9]+$ ]] && (( DSTPORT >= 1 && DSTPORT <= 64435 )); then
-            break
-        else
-            echo "Invalid port. Try again."
-        fi
+        exec 3>&1
+        CHOICE=$(dialog --clear --title "Tunn3l Menu" --menu "Select option:" 15 50 7 \
+            1 "Install new tunnel" \
+            2 "Uninstall tunnel(s)" \
+            3 "Edit tunnel" \
+            4 "Install BBR" \
+            5 "Cronjob settings" \
+            6 "Update script" \
+            0 "Exit" 2>&1 1>&3)
+        exec 3>&-
+
+        case $CHOICE in
+            1) install_vxlan_tunnel ;;
+            2) uninstall_all_vxlan ;;
+            3) edit_vxlan_tunnel ;;
+            4) install_bbr ;;
+            5) cronjob_settings ;;
+            6) update_script ;;
+            0) clear; exit 0 ;;
+            *) dialog --msgbox "Invalid option." 5 30 ;;
+        esac
     done
+}
 
-    ipv4_local=$(hostname -I | awk '{print $1}')
-    echo "Kharej Server setup complete."
-    echo -e "####################################"
-    echo -e "# Your IPv4 :                      #"
-    echo -e "#  30.0.0.2                        #"
-    echo -e "####################################"
-
-    VXLAN_IP="30.0.0.2/24"
-    REMOTE_IP=$IRAN_IP
-
-else
-    echo "[x] Invalid role selected."
-    exit 1
-fi
-
-# Detect default interface
-INTERFACE=$(ip route get 1.1.1.1 | awk '{print $5}' | head -n1)
-echo "Detected main interface: $INTERFACE"
-
-# ------------ Setup VXLAN --------------
-echo "[+] Creating VXLAN interface..."
-ip link add $VXLAN_IF type vxlan id $VNI local $(hostname -I | awk '{print $1}') remote $REMOTE_IP dev $INTERFACE dstport $DSTPORT nolearning
-
-echo "[+] Assigning IP $VXLAN_IP to $VXLAN_IF"
-ip addr add $VXLAN_IP dev $VXLAN_IF
-ip link set $VXLAN_IF up
-
-echo "[+] Adding iptables rules"
-iptables -I INPUT 1 -p udp --dport $DSTPORT -j ACCEPT
-iptables -I INPUT 1 -s $REMOTE_IP -j ACCEPT
-iptables -I INPUT 1 -s ${VXLAN_IP%/*} -j ACCEPT
-
-# ---------------- CREATE SYSTEMD SERVICE ----------------
-echo "[+] Creating systemd service for VXLAN..."
-
-cat <<EOF > /usr/local/bin/vxlan_bridge.sh
-#!/bin/bash
-ip link add $VXLAN_IF type vxlan id $VNI local $(hostname -I | awk '{print $1}') remote $REMOTE_IP dev $INTERFACE dstport $DSTPORT nolearning
-ip addr add $VXLAN_IP dev $VXLAN_IF
-ip link set $VXLAN_IF up
-# Persistent keepalive: ping remote every 30s in background
-( while true; do ping -c 1 $REMOTE_IP >/dev/null 2>&1; sleep 30; done ) &
-EOF
-
-chmod +x /usr/local/bin/vxlan_bridge.sh
-
-cat <<EOF > /etc/systemd/system/vxlan-tunnel.service
-[Unit]
-Description=VXLAN Tunnel Interface
-After=network.target
-
-[Service]
-ExecStart=/usr/local/bin/vxlan_bridge.sh
-Type=oneshot
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-chmod 644 /etc/systemd/system/vxlan-tunnel.service
-systemctl daemon-reexec
-systemctl daemon-reload
-systemctl enable vxlan-tunnel.service
-systemctl start vxlan-tunnel.service
-
-echo -e "\n${GREEN}[✓] VXLAN tunnel service enabled to run on boot.${NC}"
-
-echo "[✓] VXLAN tunnel setup completed successfully."
+# ---------------- START ----------------
+main_menu
