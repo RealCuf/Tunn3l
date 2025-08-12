@@ -1,66 +1,82 @@
-<div align="center"><img src="https://raw.githubusercontent.com/MrAminiDev/LenaTunnel/main/lena.PNG" width="500"></div>
-<div align="center"><br>
+[توضیحات فارسی](/README-fa.md)
 
-  برای توضیحات <a href="https://github.com/MrAminiDev/LenaTunnel/blob/main/README-fa.md"> فارسی اینجا بزنید </a>
+<p align="center">
+  <img width="600px" src="https://i.postimg.cc/L8mBhMP5/Chat-GPT-Image-Aug-11-2025-01-00-36-AM.png" alt="Tunn3l Logo">
 
-</div>
-<br><br>
+**Advanced VXLAN Tunnel Management Script for Linux Servers**  
+**Based on Lena Tunnel — This project is a fork of Lena Tunnel**
 
-# What is Lena Tunnel?
 
-Lena is a fast, lightweight and intelligent tunnel that provides a stable and secure network communication experience by relying on powerful VxLAN technology and automatic traffic management through Haproki. This system is designed to automatically manage communication tunnels and direct traffic with minimal latency and maximum efficiency without the need for complex settings. Lena is an ideal choice for those looking for a professional, low-power and reliable solution in network infrastructure.
+[![](https://img.shields.io/github/v/release/RealCuf/Tunn3l.svg)](https://github.com/RealCuf/Tunn3l/releases)
+[![Downloads](https://img.shields.io/github/downloads/RealCuf/Tunn3l/total.svg)](#)
+![Languages](https://img.shields.io/github/languages/top/RealCuf/Tunn3l.svg?color=green)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg?color=lightgrey)](https://opensource.org/licenses/MIT)
 
-# Key features of Lena:
 
-🚀 VxLAN-based tunneling: Using network virtualization technology to create a fast, stable and secure tunnel between servers. <br>
-🌐 Local IPv4 Support: In situations where IPv6 is restricted or blocked, Lena maintains your connection without interruption using local IPv4.<br>
-⚙️ Easy installation and setup with HAProxy: Tunnels are automatically and intelligently created and managed with the help of the powerful HAProxy tool.<br>
-💡 Very low resource consumption: Lena is designed for optimal performance and consumes minimal hardware resources while providing high speed and stability.<br>
+> **Disclaimer:** This project is only for personal learning and communication, please do not use it for illegal
+> purposes, please do not use it in a production environment
 
-# Install script
+**If this project is helpful to you, you may wish to give it a** :star2:
+
+---
+
+## **What is Tunn3l?**
+
+> Tunn3l is a fast, lightweight, and intelligent tunneling solution built on the powerful VXLAN technology, combined with automated traffic management through HAProxy. It is designed to automatically create and manage secure network tunnels without complex > configurations, delivering traffic with minimal latency and maximum efficiency. Tunn3l is an ideal choice for professionals seeking a reliable, low-resource, and high-performance networking solution.
+
+
+## **Key Features of Tunn3l (New Version):**
+
+🚀 **VXLAN-Based Tunneling:** Utilizes advanced network virtualization to create secure, stable, and high-speed tunnels between servers.
+
+🌐 **IPv4 & IPv6 Support:** Seamless tunneling even under IPv6 restrictions or in dual-stack environments.
+
+⚙️ **Easy Setup with HAProxy:** Automatically creates and manages tunnels using the powerful HAProxy load balancer.
+
+💡 **Minimal Resource Usage:** Designed for optimal performance while consuming minimal CPU and memory.
+
+📊 **Interactive Dialog UI:** Full tunnel configuration, role selection, IP setup, and service management in a user-friendly terminal-based interface.
+
+🔄 **Automated Service Management with systemd:** Creates smart systemd services and timers for periodic tunnel restarts to maintain stable connections.
+
+📡 **Intelligent Tunnel Monitoring:** Continuously checks VXLAN connectivity using a ping monitoring script and logs the results.
+
+🛠 **Advanced Management:** Edit, delete, or update the script directly from GitHub with just a few clicks.
+
+⚡ **BBR Support:** One-click installation of the BBR congestion control algorithm for improved speed and reduced latency.
+
+---
+
+## **Installation**
+
+```bash
+bash <(curl -Ls https://raw.githubusercontent.com/RealCuf/Tunn3l/refs/heads/main/install.sh)
 ```
-bash <(curl -Ls https://raw.githubusercontent.com/MrAminiDev/LenaTunnel/main/install.sh)
+
+## Tunnel Monitoring
+> This script installs a helper utility named ping_monitor.sh which periodically (every 30 seconds) pings the tunnel’s remote IP and logs the results to:
+
 ```
-## 💠 اسپانسر
+/var/log/vxlan_ping.log
+```
 
-### ⚡ مجیک میزبان — ارائه‌دهنده سرورهای پرسرعت ایران با پورت اختصاصی **10 گیگابیت**
+To view logs in real-time:
 
-اگر به‌دنبال یک **سرور ایران با کیفیت بالا و قیمت اقتصادی** برای راه‌اندازی انواع **تونل و سرویس‌های اینترنتی** هستید،  
-**مجیک میزبان انتخاب اول و آخر شماست — مطمئن، سریع و همیشه در دسترس.**
+```bash
+tail -f /var/log/vxlan_ping.log
+```
 
+To manually run the monitoring script:
+```bash
+/usr/local/bin/ping_monitor.sh <remote_ip>
+```
 
+---
 
-### 🔹 ویژگی‌های برجسته:
+## Thanks To
 
-- ارائه **سرورهای مجازی ایران با درایو NVMe** از بهترین دیتاسنترها  
-- **ترافیک شاتل** با قیمت ویژه: فقط **450 تومان به ازای هر ترابایت** *(نیم‌بها – ارزان‌تر از همه‌جا)*  
-- **ترافیک مخابرات**: 450 تومان/ترابایت با امکان **تماشای رایگان فیلیمو**
+- [@MrAminiDev](https://github.com/MrAminiDev) for the core project
 
+## Stargazers over Time
 
-
-### ✨ مزایا:
-
-- ✅ **آپلود رایگان**
-- 🔄 **انتقال ترافیک به ماه بعد**
-- ⚙️ **تحویل آنی و خودکار**
-
-
-
-### 📥 ثبت سفارش:
-
-👉 [لینک سفارش مستقیم](https://my.magicmizban.store/store/tek-vps)
-
-
-
-### 📞 راه‌های ارتباطی:
-
-- 💬 پشتیبانی در تلگرام: [@magicmizbansupport](https://t.me/magicmizbansupport)  
-- 📢 کانال رسمی: [@magic_mizban](https://t.me/magic_mizban)
-
-## Support the project with cryptocurrency
-- TRX : `TLfVhyK6ihTuPNtFpuhULNuJaiKFLHxMFL`
-- Ton : `UQC42Zx1E8SQunnNIx00UZBr_GEs_2kTgT6HBcg_S64GzUj4`
-- USDT (Bep20) : `0xED771A849B8D911f30804Cb68e76adcc5bcF5D16`
-
-## Stargazers over time
-[![Stargazers over time](https://starchart.cc/MrAminiDev/LenaTunnel.svg?variant=adaptive)](https://starchart.cc/MrAminiDev/LenaTunnel)
+[![Stargazers over time](https://starchart.cc/RealCuf/tunn3l.svg?variant=adaptive)](https://starchart.cc/RealCuf/tunn3l)
