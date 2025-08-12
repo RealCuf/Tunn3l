@@ -233,12 +233,17 @@ edit_vxlan_tunnel() {
     VXLAN_IF=$(grep -oP 'dev \K[^ ]+' "$BRIDGE_SCRIPT" | head -n1)
     VNI=$(grep -oP 'vxlan id \K[^ ]+' "$BRIDGE_SCRIPT")
 
+    exec 3>&- 2>/dev/null || true
     exec 3>&1
     NEW_REMOTE=$(dialog --inputbox "Remote IP:" 8 40 "$CUR_REMOTE" 2>&1 1>&3)
     exec 3>&-
+    
+    exec 3>&- 2>/dev/null || true
     exec 3>&1
     NEW_LOCAL=$(dialog --inputbox "Local VXLAN IP:" 8 40 "$CUR_LOCAL" 2>&1 1>&3)
     exec 3>&-
+    
+    exec 3>&- 2>/dev/null || true
     exec 3>&1
     NEW_PORT=$(dialog --inputbox "VXLAN Port:" 8 40 "$CUR_PORT" 2>&1 1>&3)
     exec 3>&-
